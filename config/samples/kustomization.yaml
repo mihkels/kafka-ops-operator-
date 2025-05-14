@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- operations_v1alpha1_kafkaoperation.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
