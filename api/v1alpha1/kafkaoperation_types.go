@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"time"
 )
 
 type OperationType string
@@ -71,7 +72,7 @@ type KafkaOperationSpec struct {
 
 	// Timeout for the operation in seconds
 	// +kubebuilder:default=300
-	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+	TimeoutSeconds time.Duration `json:"timeoutSeconds,omitempty"`
 }
 
 type OperationState string
@@ -117,6 +118,10 @@ type KafkaOperationStatus struct {
 	// Detailed conditions of the operation
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Timeout for the operation in seconds
+	// +optional
+	RetentionReducedTime *metav1.Time `json:"retentionReducedTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true

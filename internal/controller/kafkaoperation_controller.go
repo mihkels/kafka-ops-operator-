@@ -93,7 +93,14 @@ func (r *KafkaOperationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 func (r *KafkaOperationReconciler) processStateChange(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
 
+	logger.Info("Processing state change", "state", operation.Status.State)
 	if operation.Status.State == operationsv1alpha1.OperationStateWaitingForRestore {
+		waitDuration := operation.Spec.TimeoutSeconds * time.Second // or make this configurable
+		logger.Info("Waiting for restore to complete", "timeoutSeconds", waitDuration)
+		if operation.Status.RetentionReducedTime != nil && time.Since(operation.Status.RetentionReducedTime.Time) < waitDuration {
+			return ctrl.Result{RequeueAfter: waitDuration - time.Since(operation.Status.RetentionReducedTime.Time)}, nil
+		}
+
 		return r.restoreTopicRetention(ctx, operation, getNamespace(operation), logger)
 	}
 
@@ -225,13 +232,11 @@ func (r *KafkaOperationReconciler) processOperation(ctx context.Context,
 func (r *KafkaOperationReconciler) executeResetTopic(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
 
-	// Check if we need to restore retention
 	if operation.Status.CurrentRetentionBytes <= 1 { // Arbitrary small value
-		// We've already reset, now restore
+		logger.Info("Restoring topic retention", "topic", operation.Spec.TopicName, "originalRetention", operation.Status.OriginalRetentionBytes)
 		return r.restoreTopicRetention(ctx, operation, getNamespace(operation), logger)
 	}
 
-	// Connect to Kafka
 	admin, err := r.getKafkaAdminClient(ctx, operation, getNamespace(operation), logger)
 	if err != nil {
 		return r.handleOperationError(ctx, operation, "FailedKafkaConnection",
@@ -252,9 +257,11 @@ func (r *KafkaOperationReconciler) executeResetTopic(ctx context.Context,
 	}
 
 	// Update status
+	now := metav1.Now()
 	operation.Status.CurrentRetentionBytes = 1
 	operation.Status.State = operationsv1alpha1.OperationStateWaitingForRestore
 	operation.Status.Message = "Topic retention reduced, waiting before restore..."
+	operation.Status.RetentionReducedTime = &now
 
 	return r.updateStatus(ctx, operation, logger)
 }
@@ -348,7 +355,11 @@ func (r *KafkaOperationReconciler) getKafkaAdminClient(ctx context.Context,
 
 	// Get bootstrap servers from Strimzi CR or Secret
 	bootstrapServers := []string{fmt.Sprintf("%s-kafka-bootstrap.%s:9092",
-		operation.Spec.ClusterName, namespace)}
+		operation.Spec.ClusterName,
+		namespace),
+	}
+
+	logger.Info("Bootstrap servers", "servers", bootstrapServers)
 
 	// Create the admin client
 	admin, err := sarama.NewClusterAdmin(bootstrapServers, config)
@@ -385,6 +396,7 @@ func addCondition(operation *operationsv1alpha1.KafkaOperation, condType, reason
 func (r *KafkaOperationReconciler) updateStatus(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
 
+	logger.Info("Updating KafkaOperation status", "state", operation.Status.State)
 	if err := r.Status().Update(ctx, operation); err != nil {
 		logger.Error(err, "Failed to update KafkaOperation status")
 		return ctrl.Result{RequeueAfter: time.Second * 5}, err

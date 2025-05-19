@@ -77,7 +77,7 @@ spec:
               timeoutSeconds:
                 default: 300
                 description: Timeout for the operation in seconds
-                format: int32
+                format: int64
                 type: integer
               topicName:
                 description: Reference to a Strimzi KafkaTopic resource
@@ -168,6 +168,10 @@ spec:
               originalRetentionMs:
                 format: int64
                 type: integer
+              retentionReducedTime:
+                description: Timeout for the operation in seconds
+                format: date-time
+                type: string
               startTime:
                 description: Start time of the operation
                 format: date-time
