@@ -1,9 +1,11 @@
 import os
 import re
 
-input_file = 'dist/install.yaml'
-output_dir = 'dist/split'
+input_file = 'temp/install.yaml'
+output_dir = 'kafka-ops-operator/templates'
+crds_dir = 'kafka-ops-operator/crds'
 os.makedirs(output_dir, exist_ok=True)
+os.makedirs(crds_dir, exist_ok=True)
 
 with open(input_file, 'r') as f:
     content = f.read()
@@ -23,7 +25,9 @@ def extract_name(doc):
 for idx, doc in enumerate(docs):
     kind = extract(doc, 'kind')
     name = extract_name(doc)
+    directory = crds_dir if kind == 'CustomResourceDefinition' else output_dir
     filename = f'{idx:03d}-{kind}-{name}.yaml'
-    with open(os.path.join(output_dir, filename), 'w') as out:
+    with open(os.path.join(directory, filename), 'w') as out:
         out.write(doc + '\n')
-    print(f'Wrote {filename}')
+
+    print(f'Wrote {filename} to {directory}')

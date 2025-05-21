@@ -1,0 +1,31 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kafka-ops-operator-manager-role
+rules:
+- apiGroups:
+  - operations.kafkaops.io
+  resources:
+  - kafkaoperations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - operations.kafkaops.io
+  resources:
+  - kafkaoperations/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - operations.kafkaops.io
+  resources:
+  - kafkaoperations/status
+  verbs:
+  - get
+  - patch
+  - update

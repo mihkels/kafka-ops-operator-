@@ -1,0 +1,10 @@
+{{- if eq .Values.namespace.create true }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: kafka-ops-operator
+    control-plane: controller-manager
+  name: {{ .Values.namespace.name | quote }}
+{{- end }}

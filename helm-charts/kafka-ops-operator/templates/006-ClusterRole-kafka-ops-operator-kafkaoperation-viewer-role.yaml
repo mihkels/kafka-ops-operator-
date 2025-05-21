@@ -1,0 +1,22 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: kafka-ops-operator
+  name: kafka-ops-operator-kafkaoperation-viewer-role
+rules:
+- apiGroups:
+  - operations.kafkaops.io
+  resources:
+  - kafkaoperations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - operations.kafkaops.io
+  resources:
+  - kafkaoperations/status
+  verbs:
+  - get
