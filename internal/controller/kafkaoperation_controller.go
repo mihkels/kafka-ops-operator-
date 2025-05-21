@@ -141,7 +141,12 @@ func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 		return r.handleOperationError(ctx, operation, "FailedKafkaConnection",
 			fmt.Sprintf("Failed to connect to Kafka: %v", err), logger)
 	}
-	defer admin.Close()
+	defer func(admin sarama.ClusterAdmin) {
+		err := admin.Close()
+		if err != nil {
+			logger.Error(err, "Failed to close the admin client")
+		}
+	}(admin)
 
 	// Get current topic configuration
 	topicConfig, err := admin.DescribeConfig(sarama.ConfigResource{
@@ -158,16 +163,23 @@ func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 	for _, config := range topicConfig {
 		if config.Name == "retention.bytes" {
 			// Parse retention bytes
-			var retentionBytes int64
-			fmt.Sscanf(config.Value, "%d", &retentionBytes)
+			retentionBytes, err := parseConfigInt64(config.Value, logger)
+			if err != nil {
+				logger.Info("Failed to parse retention bytes", "value", config.Value, "error", err)
+				// Continue with zero value if parsing fails
+			}
+
 			operation.Status.OriginalRetentionBytes = retentionBytes
 			operation.Status.CurrentRetentionBytes = retentionBytes
 		}
 
 		if config.Name == "retention.ms" {
 			// Parse retention ms
-			var retentionMS int64
-			fmt.Sscanf(config.Value, "%d", &retentionMS)
+			retentionMS, err := parseConfigInt64(config.Value, logger)
+			if err != nil {
+				logger.Info("Failed to parse retention ms", "value", config.Value, "error", err)
+			}
+
 			operation.Status.OriginalRetentionMS = retentionMS
 			operation.Status.CurrentRetentionMS = retentionMS
 		}
@@ -242,7 +254,12 @@ func (r *KafkaOperationReconciler) executeResetTopic(ctx context.Context,
 		return r.handleOperationError(ctx, operation, "FailedKafkaConnection",
 			fmt.Sprintf("Failed to connect to Kafka: %v", err), logger)
 	}
-	defer admin.Close()
+	defer func(admin sarama.ClusterAdmin) {
+		err := admin.Close()
+		if err != nil {
+			logger.Error(err, "Failed to close the admin client")
+		}
+	}(admin)
 
 	// Set retention bytes to 1 (smallest possible)
 	retentionBytesStr := "1" // Effectively purges the topic
@@ -275,7 +292,12 @@ func (r *KafkaOperationReconciler) restoreTopicRetention(ctx context.Context,
 		return r.handleOperationError(ctx, operation, "FailedKafkaConnection",
 			fmt.Sprintf("Failed to connect to Kafka during restoration: %v", err), logger)
 	}
-	defer admin.Close()
+	defer func(admin sarama.ClusterAdmin) {
+		err := admin.Close()
+		if err != nil {
+			logger.Error(err, "Failed to close the admin client")
+		}
+	}(admin)
 
 	// Determine what retention to restore to
 	configEntries := make(map[string]*string)
@@ -410,4 +432,13 @@ func (r *KafkaOperationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&operationsv1alpha1.KafkaOperation{}).
 		Named("kafkaoperation").
 		Complete(r)
+}
+
+func parseConfigInt64(value string, logger logr.Logger) (int64, error) {
+	var result int64
+	_, err := fmt.Sscanf(value, "%d", &result)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse value '%s' to int64: %w", value, err)
+	}
+	return result, nil
 }
