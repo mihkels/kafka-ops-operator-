@@ -1,7 +1,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kafka-ops-operator-metrics-reader
+  name: {{ .Chart.Name }}-metrics-reader
 rules:
 - nonResourceURLs:
   - /metrics

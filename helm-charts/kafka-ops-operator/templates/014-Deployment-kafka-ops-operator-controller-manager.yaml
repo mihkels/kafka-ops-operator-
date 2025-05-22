@@ -2,13 +2,11 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: kafka-ops-operator
-    control-plane: controller-manager
-  name: kafka-ops-operator-controller-manager
-  namespace: kafka-ops-operator-system
+    {{- include "kafka-ops-operator.labels" . | nindent 4 }}
+  name: {{ .Chart.Name }}-controller-manager
+  namespace: {{ .Release.Namespace }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       app.kubernetes.io/name: kafka-ops-operator
@@ -28,7 +26,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: mihkels/kafka-ops-operator:1.0.22
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
         livenessProbe:
           httpGet:
             path: /healthz
@@ -44,12 +42,7 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 10
         resources:
-          limits:
-            cpu: 500m
-            memory: 128Mi
-          requests:
-            cpu: 10m
-            memory: 64Mi
+          {{ toYaml .Values.resources | nindent 12 }}
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -60,6 +53,6 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-      serviceAccountName: kafka-ops-operator-controller-manager
+      serviceAccountName: {{ .Chart.Name }}-controller-manager
       terminationGracePeriodSeconds: 10
       volumes: []
