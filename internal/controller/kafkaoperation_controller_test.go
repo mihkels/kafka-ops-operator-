@@ -19,8 +19,8 @@ package controller
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -30,8 +30,8 @@ import (
 	operationsv1alpha1 "github.io/mihkels/kafka-ops-operator/api/v1alpha1"
 )
 
-var _ = Describe("KafkaOperation Controller", func() {
-	Context("When reconciling a resource", func() {
+var _ = ginkgo.Describe("KafkaOperation Controller", func() {
+	ginkgo.Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
 
 		ctx := context.Background()
@@ -42,8 +42,8 @@ var _ = Describe("KafkaOperation Controller", func() {
 		}
 		kafkaoperation := &operationsv1alpha1.KafkaOperation{}
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind KafkaOperation")
+		ginkgo.BeforeEach(func() {
+			ginkgo.By("creating the custom resource for the Kind KafkaOperation")
 			err := k8sClient.Get(ctx, typeNamespacedName, kafkaoperation)
 			if err != nil && errors.IsNotFound(err) {
 				resource := &operationsv1alpha1.KafkaOperation{
@@ -53,21 +53,21 @@ var _ = Describe("KafkaOperation Controller", func() {
 					},
 					// TODO(user): Specify other spec details if needed.
 				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+				gomega.Expect(k8sClient.Create(ctx, resource)).To(gomega.Succeed())
 			}
 		})
 
-		AfterEach(func() {
+		ginkgo.AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
 			resource := &operationsv1alpha1.KafkaOperation{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			By("Cleanup the specific resource instance KafkaOperation")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			ginkgo.By("Cleanup the specific resource instance KafkaOperation")
+			gomega.Expect(k8sClient.Delete(ctx, resource)).To(gomega.Succeed())
 		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
+		ginkgo.It("should successfully reconcile the resource", func() {
+			ginkgo.By("Reconciling the created resource")
 			controllerReconciler := &KafkaOperationReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -76,7 +76,7 @@ var _ = Describe("KafkaOperation Controller", func() {
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
-			Expect(err).NotTo(HaveOccurred())
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})

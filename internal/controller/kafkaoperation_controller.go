@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"time"
 
@@ -362,7 +363,7 @@ func (r *KafkaOperationReconciler) restoreTopicRetention(ctx context.Context,
 
 func (r *KafkaOperationReconciler) handleOperationError(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, reason, message string, log logr.Logger) (ctrl.Result, error) {
-	log.Error(fmt.Errorf(message), "Operation failed", "reason", reason)
+	log.Error(stderrors.New(message), "Operation failed", "reason", reason)
 
 	// Update status
 	now := metav1.Now()
