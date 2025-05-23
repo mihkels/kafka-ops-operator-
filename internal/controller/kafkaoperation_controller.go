@@ -19,11 +19,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"k8s.io/apimachinery/pkg/api/errors"
+
 	"github.com/IBM/sarama"
 	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -32,6 +34,19 @@ import (
 
 	operationsv1alpha1 "github.io/mihkels/kafka-ops-operator/api/v1alpha1"
 )
+
+const (
+	retentionBytesConfig        = "retention.bytes"
+	retentionMSConfig           = "retention.ms"
+	requeueShortInterval        = 5 * time.Second
+	requeueLongInterval         = 10 * time.Second
+	kafkaAdminCloseErrorMessage = "Failed to close the admin client"
+)
+
+type RetentionSettings struct {
+	bytes int64
+	ms    int64
+}
 
 // KafkaOperationReconciler reconciles a KafkaOperation object
 type KafkaOperationReconciler struct {
@@ -45,10 +60,6 @@ type KafkaOperationReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the KafkaOperation object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
@@ -114,12 +125,42 @@ func (r *KafkaOperationReconciler) processStateChange(ctx context.Context,
 func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
 
-	// Initialize operation status
+	if err := r.initializeOperationStatus(operation); err != nil {
+		return r.handleOperationError(ctx, operation, "FailedInitialization",
+			fmt.Sprintf("Failed to initialize operation: %v", err), logger)
+	}
+
+	clusterNamespace := r.determineClusterNamespace(operation)
+
+	admin, err := r.getKafkaAdminClient(ctx, operation, clusterNamespace, logger)
+	if err != nil {
+		return r.handleOperationError(ctx, operation, "FailedKafkaConnection",
+			fmt.Sprintf("Failed to connect to Kafka: %v", err), logger)
+	}
+	defer r.closeAdminClient(admin, logger)
+
+	retentionSettings, err := r.fetchRetentionSettings(admin, operation.Spec.TopicName, logger)
+	if err != nil {
+		return r.handleOperationError(ctx, operation, "FailedTopicConfig",
+			fmt.Sprintf("Failed to get topic configuration: %v", err), logger)
+	}
+
+	if err := r.updateRetentionStatus(operation, retentionSettings); err != nil {
+		return ctrl.Result{RequeueAfter: requeueShortInterval}, err
+	}
+
+	if operation.Spec.AutoConfirm {
+		return r.startOperation(ctx, operation, logger)
+	}
+
+	return ctrl.Result{RequeueAfter: requeueLongInterval}, nil
+}
+
+func (r *KafkaOperationReconciler) initializeOperationStatus(operation *operationsv1alpha1.KafkaOperation) error {
+	now := metav1.Now()
 	operation.Status.State = operationsv1alpha1.OperationStatePending
 	operation.Status.Message = "Operation pending confirmation"
 
-	// Add condition
-	now := metav1.Now()
 	condition := metav1.Condition{
 		Type:               "Initialized",
 		Status:             metav1.ConditionTrue,
@@ -128,75 +169,54 @@ func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 		Message:            "Kafka operation created and pending confirmation",
 	}
 	operation.Status.Conditions = append(operation.Status.Conditions, condition)
+	return nil
+}
 
-	// Validate operation
-	clusterNamespace := operation.Spec.ClusterNamespace
-	if clusterNamespace == "" {
-		clusterNamespace = operation.Namespace
+func (r *KafkaOperationReconciler) determineClusterNamespace(operation *operationsv1alpha1.KafkaOperation) string {
+	if operation.Spec.ClusterNamespace != "" {
+		return operation.Spec.ClusterNamespace
 	}
+	return operation.Namespace
+}
 
-	// Connect to Kafka to get current retention settings
-	admin, err := r.getKafkaAdminClient(ctx, operation, clusterNamespace, logger)
-	if err != nil {
-		return r.handleOperationError(ctx, operation, "FailedKafkaConnection",
-			fmt.Sprintf("Failed to connect to Kafka: %v", err), logger)
+func (r *KafkaOperationReconciler) closeAdminClient(admin sarama.ClusterAdmin, logger logr.Logger) {
+	if err := admin.Close(); err != nil {
+		logger.Error(err, kafkaAdminCloseErrorMessage)
 	}
-	defer func(admin sarama.ClusterAdmin) {
-		err := admin.Close()
-		if err != nil {
-			logger.Error(err, "Failed to close the admin client")
-		}
-	}(admin)
+}
 
-	// Get current topic configuration
+func (r *KafkaOperationReconciler) fetchRetentionSettings(admin sarama.ClusterAdmin, topicName string,
+	logger logr.Logger) (RetentionSettings, error) {
+
+	settings := RetentionSettings{}
 	topicConfig, err := admin.DescribeConfig(sarama.ConfigResource{
 		Type: sarama.TopicResource,
-		Name: operation.Spec.TopicName,
+		Name: topicName,
 	})
-
 	if err != nil {
-		return r.handleOperationError(ctx, operation, "FailedTopicConfig",
-			fmt.Sprintf("Failed to get topic configuration: %v", err), logger)
+		return settings, err
 	}
 
-	// Extract current retention settings
 	for _, config := range topicConfig {
-		if config.Name == "retention.bytes" {
-			// Parse retention bytes
-			retentionBytes, err := parseConfigInt64(config.Value, logger)
-			if err != nil {
-				logger.Info("Failed to parse retention bytes", "value", config.Value, "error", err)
-				// Continue with zero value if parsing fails
-			}
-
-			operation.Status.OriginalRetentionBytes = retentionBytes
-			operation.Status.CurrentRetentionBytes = retentionBytes
+		if config.Name == retentionBytesConfig {
+			settings.bytes, _ = parseConfigInt64(config.Value, logger)
 		}
-
-		if config.Name == "retention.ms" {
-			// Parse retention ms
-			retentionMS, err := parseConfigInt64(config.Value, logger)
-			if err != nil {
-				logger.Info("Failed to parse retention ms", "value", config.Value, "error", err)
-			}
-
-			operation.Status.OriginalRetentionMS = retentionMS
-			operation.Status.CurrentRetentionMS = retentionMS
+		if config.Name == retentionMSConfig {
+			settings.ms, _ = parseConfigInt64(config.Value, logger)
 		}
 	}
+	return settings, nil
+}
 
-	// Update the status
-	if err := r.Status().Update(ctx, operation); err != nil {
-		logger.Error(err, "Failed to update KafkaOperation status")
-		return ctrl.Result{RequeueAfter: time.Second * 5}, err
-	}
+func (r *KafkaOperationReconciler) updateRetentionStatus(operation *operationsv1alpha1.KafkaOperation,
+	settings RetentionSettings) error {
 
-	// If auto-confirm is enabled, proceed directly
-	if operation.Spec.AutoConfirm {
-		return r.startOperation(ctx, operation, logger)
-	}
+	operation.Status.OriginalRetentionBytes = settings.bytes
+	operation.Status.CurrentRetentionBytes = settings.bytes
+	operation.Status.OriginalRetentionMS = settings.ms
+	operation.Status.CurrentRetentionMS = settings.ms
 
-	return ctrl.Result{RequeueAfter: time.Second * 10}, nil
+	return nil
 }
 
 func (r *KafkaOperationReconciler) startOperation(ctx context.Context,
@@ -257,14 +277,14 @@ func (r *KafkaOperationReconciler) executeResetTopic(ctx context.Context,
 	defer func(admin sarama.ClusterAdmin) {
 		err := admin.Close()
 		if err != nil {
-			logger.Error(err, "Failed to close the admin client")
+			logger.Error(err, kafkaAdminCloseErrorMessage)
 		}
 	}(admin)
 
 	// Set retention bytes to 1 (smallest possible)
 	retentionBytesStr := "1" // Effectively purges the topic
 	configEntries := map[string]*string{
-		"retention.bytes": &retentionBytesStr,
+		retentionBytesConfig: &retentionBytesStr,
 	}
 
 	// Update the topic configuration
@@ -295,7 +315,7 @@ func (r *KafkaOperationReconciler) restoreTopicRetention(ctx context.Context,
 	defer func(admin sarama.ClusterAdmin) {
 		err := admin.Close()
 		if err != nil {
-			logger.Error(err, "Failed to close the admin client")
+			logger.Error(err, kafkaAdminCloseErrorMessage)
 		}
 	}(admin)
 
@@ -308,7 +328,7 @@ func (r *KafkaOperationReconciler) restoreTopicRetention(ctx context.Context,
 		restoreRetentionBytes = operation.Spec.RestoreRetentionBytes
 	}
 	retentionBytesStr := fmt.Sprintf("%d", restoreRetentionBytes)
-	configEntries["retention.bytes"] = &retentionBytesStr
+	configEntries[retentionBytesConfig] = &retentionBytesStr
 
 	// Handle retention MS if specified
 	if operation.Spec.RestoreRetentionMS != 0 || operation.Status.OriginalRetentionMS != 0 {
