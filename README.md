@@ -1,135 +1,249 @@
-# kafka-ops-operator
-// TODO(user): Add simple overview of use/purpose
+# Kafka Operations Operator (kafka-ops-operator)
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Getting Started
+## Overview
 
-### Prerequisites
-- go version v1.23.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+Kafka Operations Operator is a Kubernetes operator that enables declarative management of Kafka operations using custom resources. It allows platform engineers and developers to perform operational tasks on Kafka topics without direct access to Kafka administration tools.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+Currently, the operator supports the following operations:
+- **ResetTopic**: Temporarily reduce topic retention settings to clear messages, then restore original or specified retention settings
+
+## Architecture
+
+The operator follows the Kubernetes operator pattern:
+
+1. **Custom Resource Definition (CRD)**: Defines `KafkaOperation` resources that specify the desired Kafka operations
+2. **Controller**: Watches for `KafkaOperation` resources and reconciles the desired state
+3. **Kafka Integration**: Connects to Kafka clusters using the Sarama client library to execute operations
+
+The operator implements a state machine for tracking operation progress:
+- **Pending**: Initial state when operation is created
+- **Confirming**: Waiting for confirmation (if autoConfirm is false)
+- **InProgress**: Executing the operation
+- **WaitingForRestore**: For ResetTopic, waiting before restoring original settings
+- **Completed**: Operation successfully completed
+- **Failed**: Operation failed
+- **Cancelled**: Operation was cancelled
+
+## Prerequisites
+
+- [Go](https://golang.org/doc/install) (version matching go.mod)
+- [Docker](https://docs.docker.com/get-docker/)
+- [kubectl](https://kubernetes.io/docs/tasks/tools/)
+- Access to a Kubernetes cluster (e.g., [kind](https://kind.sigs.k8s.io/) or Minikube)
+- [Operator SDK](https://sdk.operatorframework.io/docs/installation/) (optional, for development)
+- Access to a Kafka cluster
+
+## Installation
+
+### Build from Source
+
+1. **Build the Operator Binary**:
+   ```sh
+   make build
+   ```
+
+2. **Build the Docker Image**:
+   ```sh
+   make docker-build IMG=<your-repo>/kafka-ops-operator:latest
+   ```
+
+3. **Push the Docker Image**:
+   ```sh
+   make docker-push IMG=<your-repo>/kafka-ops-operator:latest
+   ```
+
+### Deploy to Kubernetes
+
+1. **Install CRDs**:
+   ```sh
+   make install
+   ```
+
+2. **Deploy the Operator**:
+   ```sh
+   make deploy IMG=<your-repo>/kafka-ops-operator:latest
+   ```
+
+### Using Helm Chart
+
+A Helm chart is available for easy deployment:
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/kafka-ops-operator:tag
+cd helm-charts/kafka-ops-operator
+helm install kafka-ops-operator .
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+## Usage
 
-**Install the CRDs into the cluster:**
+### ResetTopic Operation
 
-```sh
-make install
+The ResetTopic operation allows you to clear messages from a Kafka topic by temporarily setting a very low retention value, then restoring the original or specified retention settings.
+
+1. **Create a KafkaOperation resource**:
+
+```yaml
+apiVersion: operations.kafkaops.io/v1alpha1
+kind: KafkaOperation
+metadata:
+  name: reset-my-topic
+spec:
+  operation: ResetTopic
+  clusterName: my-kafka-cluster      # Name of the Kafka cluster
+  clusterNamespace: kafka-system     # Namespace where the Kafka cluster is deployed
+  topicName: my-topic                # Name of the topic to reset
+  retentionBytes: 1                  # Temporary retention bytes (set very low to clear messages)
+  retentionMs: 1000                  # Optional: Temporary retention time in milliseconds
+  restoreRetentionBytes: 1073741824  # Optional: Retention bytes to restore after reset (1GB)
+  restoreRetentionMs: 86400000       # Optional: Retention time to restore after reset (24h)
+  autoConfirm: true                  # Whether to execute automatically without confirmation
+  timeoutSeconds: 300                # Timeout for the operation
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+Here's a real-world example from the included sample:
 
-```sh
-make deploy IMG=<some-registry>/kafka-ops-operator:tag
+```yaml
+apiVersion: operations.kafkaops.io/v1alpha1
+kind: KafkaOperation
+metadata:
+  name: reset-motivation-topic
+spec:
+  operation: ResetTopic
+  clusterName: digital-ocean-cluster
+  clusterNamespace: kafka-worker
+  topicName: motivation
+  timeoutSeconds: 30
+  retentionBytes: 1
+  autoConfirm: true
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+2. **Apply the resource**:
+   ```sh
+   kubectl apply -f reset-topic.yaml
+   ```
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+3. **Check the operation status**:
+   ```sh
+   kubectl get kafkaoperation reset-my-topic -o yaml
+   ```
 
-```sh
-kubectl apply -k config/samples/
+### Operation States
+
+The `status.state` field in the KafkaOperation resource indicates the current state of the operation:
+
+- **Pending**: The operation has been created but not yet started
+- **Confirming**: Waiting for manual confirmation (if autoConfirm is false)
+- **InProgress**: The operation is currently being executed
+- **WaitingForRestore**: For ResetTopic, the retention has been reduced and waiting to restore
+- **Completed**: The operation has completed successfully
+- **Failed**: The operation has failed (check status.message for details)
+- **Cancelled**: The operation was cancelled
+
+## Custom Resource Definition (CRD)
+
+### KafkaOperation Spec Fields
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| operation | string | Operation type (currently only "ResetTopic") | Yes |
+| topicName | string | Name of the Kafka topic | Yes |
+| clusterName | string | Name of the Kafka cluster | Yes |
+| clusterNamespace | string | Namespace of the Kafka cluster | No (defaults to the same namespace) |
+| retentionBytes | int64 | Temporary retention bytes for reset operation | No |
+| retentionMs | int64 | Temporary retention time in milliseconds | No |
+| restoreRetentionBytes | int64 | Retention bytes to restore after reset | No |
+| restoreRetentionMs | int64 | Retention time to restore after reset | No |
+| autoConfirm | bool | Whether to execute automatically without confirmation | No (defaults to false) |
+| timeoutSeconds | int | Timeout for the operation in seconds | No (defaults to 300) |
+
+### KafkaOperation Status Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| state | string | Current state of the operation |
+| originalRetentionBytes | int64 | Original retention bytes before operation |
+| originalRetentionMs | int64 | Original retention time in milliseconds before operation |
+| currentRetentionBytes | int64 | Current retention bytes |
+| currentRetentionMs | int64 | Current retention time in milliseconds |
+| startTime | time | When the operation started |
+| completionTime | time | When the operation completed |
+| message | string | Descriptive message about the current state |
+| conditions | []Condition | Detailed conditions of the operation |
+| retentionReducedTime | time | When the retention was reduced (for reset operations) |
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Operation Stuck in Pending State**:
+   - Check if the operator is running: `kubectl get pods -n <operator-namespace>`
+   - Check operator logs: `kubectl logs -n <operator-namespace> <operator-pod>`
+
+2. **Operation Failed**:
+   - Check the status.message field: `kubectl get kafkaoperation <name> -o jsonpath='{.status.message}'`
+   - Check operator logs for detailed error information
+
+3. **Cannot Connect to Kafka**:
+   - Verify the clusterName and clusterNamespace are correct
+   - Ensure the operator has network access to the Kafka brokers
+   - Check if authentication is properly configured
+
+### Debugging
+
+Enable verbose logging by setting the log level in the operator deployment:
+
+```yaml
+args:
+  - "--zap-log-level=debug"
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+## Development
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+### Running Tests
 
 ```sh
-kubectl delete -k config/samples/
+# Run unit tests
+make test
+
+# Run end-to-end tests
+make test-e2e
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+### Local Development
+
+1. Install the CRDs:
+   ```sh
+   make install
+   ```
+
+2. Run the controller locally:
+   ```sh
+   make run
+   ```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## Cleanup
+
+To remove the operator and CRDs from your cluster:
 
 ```sh
+# Remove the operator deployment
+make undeploy
+
+# Remove the CRDs
 make uninstall
 ```
 
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/kafka-ops-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/kafka-ops-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
-
 ## License
 
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+This project is licensed under the MIT License - see the LICENSE file for details.
