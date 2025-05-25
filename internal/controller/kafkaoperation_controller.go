@@ -136,7 +136,7 @@ func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 	}
 	defer r.closeAdminClient(admin, logger)
 
-	retentionSettings, err := r.fetchRetentionSettings(admin, operation.Spec.TopicName, logger)
+	retentionSettings, err := r.fetchRetentionSettings(admin, operation.Spec.TopicName)
 	if err != nil {
 		return r.handleOperationError(ctx, operation, "FailedTopicConfig",
 			fmt.Sprintf("Failed to get topic configuration: %v", err), logger)
@@ -179,8 +179,7 @@ func (r *KafkaOperationReconciler) closeAdminClient(admin sarama.ClusterAdmin, l
 	}
 }
 
-func (r *KafkaOperationReconciler) fetchRetentionSettings(admin sarama.ClusterAdmin, topicName string,
-	logger logr.Logger) (RetentionSettings, error) {
+func (r *KafkaOperationReconciler) fetchRetentionSettings(admin sarama.ClusterAdmin, topicName string) (RetentionSettings, error) {
 
 	settings := RetentionSettings{}
 	topicConfig, err := admin.DescribeConfig(sarama.ConfigResource{
