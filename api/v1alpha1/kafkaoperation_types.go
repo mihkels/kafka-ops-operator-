@@ -71,9 +71,9 @@ type KafkaOperationSpec struct {
 	// +kubebuilder:default=false
 	AutoConfirm bool `json:"autoConfirm,omitempty"`
 
-	// Timeout for the operation in seconds
-	// +kubebuilder:default=300
-	TimeoutSeconds time.Duration `json:"timeoutSeconds,omitempty"`
+	// Timeout for the operation
+	// +kubebuilder:default=30
+	Timeout time.Duration `json:"timeoutSeconds,omitempty"`
 }
 
 type OperationState string

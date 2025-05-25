@@ -39,7 +39,6 @@ import (
 const (
 	retentionBytesConfig        = "retention.bytes"
 	retentionMSConfig           = "retention.ms"
-	requeueShortInterval        = 5 * time.Second
 	requeueLongInterval         = 10 * time.Second
 	kafkaAdminCloseErrorMessage = "Failed to close the admin client"
 )
@@ -107,7 +106,7 @@ func (r *KafkaOperationReconciler) processStateChange(ctx context.Context,
 
 	logger.Info("Processing state change", "state", operation.Status.State)
 	if operation.Status.State == operationsv1alpha1.OperationStateWaitingForRestore {
-		waitDuration := operation.Spec.TimeoutSeconds * time.Second // or make this configurable
+		waitDuration := operation.Spec.Timeout * time.Second // or make this configurable
 		logger.Info("Waiting for restore to complete", "timeoutSeconds", waitDuration)
 		if operation.Status.RetentionReducedTime != nil && time.Since(operation.Status.RetentionReducedTime.Time) < waitDuration {
 			return ctrl.Result{RequeueAfter: waitDuration - time.Since(operation.Status.RetentionReducedTime.Time)}, nil
@@ -126,14 +125,11 @@ func (r *KafkaOperationReconciler) processStateChange(ctx context.Context,
 func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
 
-	if err := r.initializeOperationStatus(operation); err != nil {
-		return r.handleOperationError(ctx, operation, "FailedInitialization",
-			fmt.Sprintf("Failed to initialize operation: %v", err), logger)
-	}
+	r.initializeOperationStatus(operation)
 
 	clusterNamespace := r.determineClusterNamespace(operation)
 
-	admin, err := r.getKafkaAdminClient(ctx, operation, clusterNamespace, logger)
+	admin, err := r.getKafkaAdminClient(operation, clusterNamespace, logger)
 	if err != nil {
 		return r.handleOperationError(ctx, operation, "FailedKafkaConnection",
 			fmt.Sprintf("Failed to connect to Kafka: %v", err), logger)
@@ -146,9 +142,7 @@ func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 			fmt.Sprintf("Failed to get topic configuration: %v", err), logger)
 	}
 
-	if err := r.updateRetentionStatus(operation, retentionSettings); err != nil {
-		return ctrl.Result{RequeueAfter: requeueShortInterval}, err
-	}
+	r.updateRetentionStatus(operation, retentionSettings)
 
 	if operation.Spec.AutoConfirm {
 		return r.startOperation(ctx, operation, logger)
@@ -157,7 +151,7 @@ func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 	return ctrl.Result{RequeueAfter: requeueLongInterval}, nil
 }
 
-func (r *KafkaOperationReconciler) initializeOperationStatus(operation *operationsv1alpha1.KafkaOperation) error {
+func (r *KafkaOperationReconciler) initializeOperationStatus(operation *operationsv1alpha1.KafkaOperation) {
 	now := metav1.Now()
 	operation.Status.State = operationsv1alpha1.OperationStatePending
 	operation.Status.Message = "Operation pending confirmation"
@@ -170,7 +164,6 @@ func (r *KafkaOperationReconciler) initializeOperationStatus(operation *operatio
 		Message:            "Kafka operation created and pending confirmation",
 	}
 	operation.Status.Conditions = append(operation.Status.Conditions, condition)
-	return nil
 }
 
 func (r *KafkaOperationReconciler) determineClusterNamespace(operation *operationsv1alpha1.KafkaOperation) string {
@@ -200,24 +193,22 @@ func (r *KafkaOperationReconciler) fetchRetentionSettings(admin sarama.ClusterAd
 
 	for _, config := range topicConfig {
 		if config.Name == retentionBytesConfig {
-			settings.bytes, _ = parseConfigInt64(config.Value, logger)
+			settings.bytes, _ = parseConfigInt64(config.Value)
 		}
 		if config.Name == retentionMSConfig {
-			settings.ms, _ = parseConfigInt64(config.Value, logger)
+			settings.ms, _ = parseConfigInt64(config.Value)
 		}
 	}
 	return settings, nil
 }
 
 func (r *KafkaOperationReconciler) updateRetentionStatus(operation *operationsv1alpha1.KafkaOperation,
-	settings RetentionSettings) error {
+	settings RetentionSettings) {
 
 	operation.Status.OriginalRetentionBytes = settings.bytes
 	operation.Status.CurrentRetentionBytes = settings.bytes
 	operation.Status.OriginalRetentionMS = settings.ms
 	operation.Status.CurrentRetentionMS = settings.ms
-
-	return nil
 }
 
 func (r *KafkaOperationReconciler) startOperation(ctx context.Context,
@@ -270,7 +261,7 @@ func (r *KafkaOperationReconciler) executeResetTopic(ctx context.Context,
 		return r.restoreTopicRetention(ctx, operation, getNamespace(operation), logger)
 	}
 
-	admin, err := r.getKafkaAdminClient(ctx, operation, getNamespace(operation), logger)
+	admin, err := r.getKafkaAdminClient(operation, getNamespace(operation), logger)
 	if err != nil {
 		return r.handleOperationError(ctx, operation, "FailedKafkaConnection",
 			fmt.Sprintf("Failed to connect to Kafka: %v", err), logger)
@@ -308,7 +299,7 @@ func (r *KafkaOperationReconciler) restoreTopicRetention(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, namespace string, logger logr.Logger) (ctrl.Result, error) {
 
 	// Connect to Kafka
-	admin, err := r.getKafkaAdminClient(ctx, operation, namespace, logger)
+	admin, err := r.getKafkaAdminClient(operation, namespace, logger)
 	if err != nil {
 		return r.handleOperationError(ctx, operation, "FailedKafkaConnection",
 			fmt.Sprintf("Failed to connect to Kafka during restoration: %v", err), logger)
@@ -390,7 +381,7 @@ func (r *KafkaOperationReconciler) handleOperationError(ctx context.Context,
 	return ctrl.Result{}, nil
 }
 
-func (r *KafkaOperationReconciler) getKafkaAdminClient(ctx context.Context,
+func (r *KafkaOperationReconciler) getKafkaAdminClient(
 	operation *operationsv1alpha1.KafkaOperation, namespace string, logger logr.Logger) (sarama.ClusterAdmin, error) {
 	// Create Sarama configuration
 	config := sarama.NewConfig()
@@ -455,7 +446,7 @@ func (r *KafkaOperationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func parseConfigInt64(value string, logger logr.Logger) (int64, error) {
+func parseConfigInt64(value string) (int64, error) {
 	var result int64
 	_, err := fmt.Sscanf(value, "%d", &result)
 	if err != nil {
