@@ -41,7 +41,7 @@ type KafkaOperationSpec struct {
 
 	// Reference to a Kafka cluster
 	// +kubebuilder:validation:Required
-	ClusterName string `json:"clusterName"`
+	ClusterName string `json:"clusterName,omitempty"`
 
 	// Namespace of the Kafka cluster
 	// +optional

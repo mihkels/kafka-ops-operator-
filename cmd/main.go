@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"github.io/mihkels/kafka-ops-operator/internal/config"
 	"os"
 	"path/filepath"
 
@@ -202,9 +203,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	cfg := config.NewConfig()
 	if err = (&controller.KafkaOperationReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Config: cfg,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "KafkaOperation")
 		os.Exit(1)
