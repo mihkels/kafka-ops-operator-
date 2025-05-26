@@ -17,8 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"time"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -73,7 +71,7 @@ type KafkaOperationSpec struct {
 
 	// Timeout for the operation
 	// +kubebuilder:default=30
-	Timeout time.Duration `json:"timeoutSeconds,omitempty"`
+	Timeout int `json:"timeoutSeconds,omitempty"`
 }
 
 type OperationState string

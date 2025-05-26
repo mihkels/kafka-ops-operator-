@@ -51,7 +51,8 @@ type RetentionSettings struct {
 // KafkaOperationReconciler reconciles a KafkaOperation object
 type KafkaOperationReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme              *runtime.Scheme
+	getKafkaAdminClient func(operation *operationsv1alpha1.KafkaOperation, namespace string, logger logr.Logger) (sarama.ClusterAdmin, error)
 }
 
 // +kubebuilder:rbac:groups=operations.kafkaops.io,resources=kafkaoperations,verbs=get;list;watch;create;update;patch;delete
@@ -66,6 +67,15 @@ type KafkaOperationReconciler struct {
 func (r *KafkaOperationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
 
+	// Check if context is cancelled
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled, stopping reconciliation")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
+
 	operation := &operationsv1alpha1.KafkaOperation{}
 	err := r.Get(ctx, req.NamespacedName, operation)
 	if err != nil {
@@ -76,46 +86,116 @@ func (r *KafkaOperationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Store the resource version for optimistic concurrency control
+	resourceVersion := operation.ResourceVersion
+
+	// Check context again before proceeding
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled after fetching resource")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
+
 	// Handle based on current state
+	var result ctrl.Result
+	var reconcileErr error
+
 	switch operation.Status.State {
 	case "": // New operation
-		return r.handleNewOperation(ctx, operation, logger)
+		result, reconcileErr = r.handleNewOperation(ctx, operation, logger)
 	case operationsv1alpha1.OperationStatePending:
 		if operation.Spec.AutoConfirm {
-			return r.startOperation(ctx, operation, logger)
+			result, reconcileErr = r.startOperation(ctx, operation, logger)
+		} else {
+			result = ctrl.Result{RequeueAfter: time.Second * 30}
 		}
-		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	case operationsv1alpha1.OperationStateWaitingForRestore,
 		operationsv1alpha1.OperationStateInProgress:
-		return r.processStateChange(ctx, operation, logger)
+		result, reconcileErr = r.processStateChange(ctx, operation, logger)
 	case operationsv1alpha1.OperationStateConfirming:
-		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+		result = ctrl.Result{RequeueAfter: time.Second * 30}
 	case operationsv1alpha1.OperationStateCompleted,
 		operationsv1alpha1.OperationStateFailed,
 		operationsv1alpha1.OperationStateCancelled:
-		return ctrl.Result{}, nil
+		// No action needed for terminal states
 	default:
 		logger.Info("Unknown operation state", "state", operation.Status.State)
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
+		result = ctrl.Result{RequeueAfter: time.Minute}
 	}
+
+	// Check for race conditions by verifying the resource version hasn't changed
+	if reconcileErr == nil && operation.ResourceVersion != resourceVersion {
+		// Resource was modified during reconciliation, refetch and retry
+		logger.Info("Resource version changed during reconciliation, refetching",
+			"oldVersion", resourceVersion, "newVersion", operation.ResourceVersion)
+
+		// Refetch the resource
+		refetchedOperation := &operationsv1alpha1.KafkaOperation{}
+		if err := r.Get(ctx, req.NamespacedName, refetchedOperation); err != nil {
+			if errors.IsNotFound(err) {
+				logger.Info("Resource no longer exists")
+				return ctrl.Result{}, nil
+			}
+			logger.Error(err, "Failed to refetch KafkaOperation")
+			return ctrl.Result{RequeueAfter: time.Second * 5}, err
+		}
+
+		// If the state has changed, requeue for another reconciliation
+		if refetchedOperation.Status.State != operation.Status.State {
+			logger.Info("Resource state changed during reconciliation, requeueing",
+				"oldState", operation.Status.State, "newState", refetchedOperation.Status.State)
+			return ctrl.Result{Requeue: true}, nil
+		}
+	}
+
+	return result, reconcileErr
 }
 
 // New helper function to handle state transitions
 func (r *KafkaOperationReconciler) processStateChange(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
 
+	// Check if context is cancelled
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled, stopping state change processing")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
+
 	logger.Info("Processing state change", "state", operation.Status.State)
 	if operation.Status.State == operationsv1alpha1.OperationStateWaitingForRestore {
-		waitDuration := operation.Spec.Timeout * time.Second // or make this configurable
+		waitDuration := time.Duration(operation.Spec.Timeout) * time.Second // convert int to time.Duration
 		logger.Info("Waiting for restore to complete", "timeoutSeconds", waitDuration)
 		if operation.Status.RetentionReducedTime != nil && time.Since(operation.Status.RetentionReducedTime.Time) < waitDuration {
 			return ctrl.Result{RequeueAfter: waitDuration - time.Since(operation.Status.RetentionReducedTime.Time)}, nil
+		}
+
+		// Check context again before proceeding with restore
+		select {
+		case <-ctx.Done():
+			logger.Info("Context cancelled before restoring topic retention")
+			return ctrl.Result{}, ctx.Err()
+		default:
+			// Context not cancelled, proceed
 		}
 
 		return r.restoreTopicRetention(ctx, operation, getNamespace(operation), logger)
 	}
 
 	if operation.Status.State == operationsv1alpha1.OperationStateInProgress {
+		// Check context again before proceeding with operation
+		select {
+		case <-ctx.Done():
+			logger.Info("Context cancelled before processing operation")
+			return ctrl.Result{}, ctx.Err()
+		default:
+			// Context not cancelled, proceed
+		}
+
 		return r.processOperation(ctx, operation, logger)
 	}
 
@@ -124,6 +204,15 @@ func (r *KafkaOperationReconciler) processStateChange(ctx context.Context,
 
 func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
+
+	// Check if context is cancelled
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled, stopping new operation handling")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
 
 	r.initializeOperationStatus(operation)
 
@@ -136,6 +225,15 @@ func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 	}
 	defer r.closeAdminClient(admin, logger)
 
+	// Check context again before proceeding
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled after connecting to Kafka")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
+
 	retentionSettings, err := r.fetchRetentionSettings(admin, operation.Spec.TopicName)
 	if err != nil {
 		return r.handleOperationError(ctx, operation, "FailedTopicConfig",
@@ -144,7 +242,27 @@ func (r *KafkaOperationReconciler) handleNewOperation(ctx context.Context,
 
 	r.updateRetentionStatus(operation, retentionSettings)
 
+	// If auto-confirm is true, we'll directly move to InProgress state
+	// so we don't need to update status twice
+	if !operation.Spec.AutoConfirm {
+		// Update status with initialized state and retention settings
+		result, err := r.updateStatus(ctx, operation, logger)
+		if err != nil {
+			return result, err
+		}
+	}
+
+	// Check context again before proceeding with auto-confirm
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled after updating status")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
+
 	if operation.Spec.AutoConfirm {
+		// For auto-confirm, we'll directly move to InProgress state
 		return r.startOperation(ctx, operation, logger)
 	}
 
@@ -213,6 +331,15 @@ func (r *KafkaOperationReconciler) updateRetentionStatus(operation *operationsv1
 func (r *KafkaOperationReconciler) startOperation(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
 
+	// Check if context is cancelled
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled, stopping operation start")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
+
 	now := metav1.Now()
 	operation.Status.State = operationsv1alpha1.OperationStateInProgress
 	operation.Status.StartTime = &now
@@ -229,18 +356,43 @@ func (r *KafkaOperationReconciler) startOperation(ctx context.Context,
 	}
 	operation.Status.Conditions = append(operation.Status.Conditions, condition)
 
-	// Update the status
-	if err := r.Status().Update(ctx, operation); err != nil {
-		logger.Error(err, "Failed to update KafkaOperation status")
-		return ctrl.Result{RequeueAfter: time.Second * 5}, err
+	// Use the updateStatus function which handles retries and conflicts
+	result, err := r.updateStatus(ctx, operation, logger)
+	if err != nil {
+		return result, err
+	}
+
+	// Check context again before proceeding with operation
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled after updating status")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
 	}
 
 	// Continue with processing the operation
-	return r.processOperation(ctx, operation, logger)
+	result, err = r.processOperation(ctx, operation, logger)
+
+	// Ensure we requeue or have a requeue after set
+	if !result.Requeue && result.RequeueAfter == 0 {
+		result.Requeue = true
+	}
+
+	return result, err
 }
 
 func (r *KafkaOperationReconciler) processOperation(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
+
+	// Check if context is cancelled
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled, stopping operation processing")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
 
 	// Execute different logic based on operation type
 	switch operation.Spec.Operation {
@@ -254,6 +406,15 @@ func (r *KafkaOperationReconciler) processOperation(ctx context.Context,
 
 func (r *KafkaOperationReconciler) executeResetTopic(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
+
+	// Check if context is cancelled
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled, stopping reset topic execution")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
 
 	if operation.Status.CurrentRetentionBytes <= 1 { // Arbitrary small value
 		logger.Info("Restoring topic retention", "topic", operation.Spec.TopicName, "originalRetention", operation.Status.OriginalRetentionBytes)
@@ -272,10 +433,32 @@ func (r *KafkaOperationReconciler) executeResetTopic(ctx context.Context,
 		}
 	}(admin)
 
-	// Set retention bytes to 1 (smallest possible)
-	retentionBytesStr := "1" // Effectively purges the topic
+	// Check context again before proceeding
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled after connecting to Kafka")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
+
+	// Set retention bytes to the value specified in the spec, or 1 (smallest possible) if not specified
+	var retentionBytes int64 = 1 // Default to 1 (effectively purges the topic)
+	if operation.Spec.RetentionBytes != 0 {
+		retentionBytes = operation.Spec.RetentionBytes
+	}
+	retentionBytesStr := fmt.Sprintf("%d", retentionBytes)
 	configEntries := map[string]*string{
 		retentionBytesConfig: &retentionBytesStr,
+	}
+
+	// Check context again before altering config
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled before altering Kafka config")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
 	}
 
 	// Update the topic configuration
@@ -286,16 +469,32 @@ func (r *KafkaOperationReconciler) executeResetTopic(ctx context.Context,
 
 	// Update status
 	now := metav1.Now()
-	operation.Status.CurrentRetentionBytes = 1
+	operation.Status.CurrentRetentionBytes = retentionBytes
 	operation.Status.State = operationsv1alpha1.OperationStateWaitingForRestore
 	operation.Status.Message = "Topic retention reduced, waiting before restore..."
 	operation.Status.RetentionReducedTime = &now
 
-	return r.updateStatus(ctx, operation, logger)
+	// Use the updateStatus function which handles retries and conflicts
+	result, err := r.updateStatus(ctx, operation, logger)
+	if err != nil {
+		return result, err
+	}
+
+	// Requeue to check later if the retention period has passed
+	return ctrl.Result{RequeueAfter: time.Second * 10}, nil
 }
 
 func (r *KafkaOperationReconciler) restoreTopicRetention(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, namespace string, logger logr.Logger) (ctrl.Result, error) {
+
+	// Check if context is cancelled
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled, stopping topic retention restoration")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
 
 	// Connect to Kafka
 	admin, err := r.getKafkaAdminClient(operation, namespace, logger)
@@ -309,6 +508,15 @@ func (r *KafkaOperationReconciler) restoreTopicRetention(ctx context.Context,
 			logger.Error(err, kafkaAdminCloseErrorMessage)
 		}
 	}(admin)
+
+	// Check context again before proceeding
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled after connecting to Kafka")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
 
 	// Determine what retention to restore to
 	configEntries := make(map[string]*string)
@@ -331,6 +539,15 @@ func (r *KafkaOperationReconciler) restoreTopicRetention(ctx context.Context,
 		configEntries["retention.ms"] = &retentionMSStr
 	}
 
+	// Check context again before altering config
+	select {
+	case <-ctx.Done():
+		logger.Info("Context cancelled before altering Kafka config")
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
+
 	// Update the topic configuration
 	if err = admin.AlterConfig(sarama.TopicResource, operation.Spec.TopicName, configEntries, false); err != nil {
 		return r.handleOperationError(ctx, operation, "FailedRetentionRestore",
@@ -338,6 +555,7 @@ func (r *KafkaOperationReconciler) restoreTopicRetention(ctx context.Context,
 	}
 
 	// Complete the operation
+	logger.Info("Restoring topic retention", "topic", operation.Spec.TopicName, "originalRetention", operation.Status.OriginalRetentionBytes)
 	now := metav1.Now()
 	operation.Status.State = operationsv1alpha1.OperationStateCompleted
 	operation.Status.CompletionTime = &now
@@ -353,6 +571,14 @@ func (r *KafkaOperationReconciler) restoreTopicRetention(ctx context.Context,
 
 func (r *KafkaOperationReconciler) handleOperationError(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, reason, message string, log logr.Logger) (ctrl.Result, error) {
+	// Check if context is cancelled
+	select {
+	case <-ctx.Done():
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
+	}
+
 	log.Error(stderrors.New(message), "Operation failed", "reason", reason)
 
 	// Update status
@@ -371,16 +597,11 @@ func (r *KafkaOperationReconciler) handleOperationError(ctx context.Context,
 	}
 	operation.Status.Conditions = append(operation.Status.Conditions, condition)
 
-	// Update the status
-	if err := r.Status().Update(ctx, operation); err != nil {
-		log.Error(err, "Failed to update KafkaOperation status for failure")
-		return ctrl.Result{RequeueAfter: time.Second * 5}, err
-	}
-
-	return ctrl.Result{}, nil
+	// Use the updateStatus function which handles retries and conflicts
+	return r.updateStatus(ctx, operation, log)
 }
 
-func (r *KafkaOperationReconciler) getKafkaAdminClient(
+func (r *KafkaOperationReconciler) defaultGetKafkaAdminClient(
 	operation *operationsv1alpha1.KafkaOperation, namespace string, logger logr.Logger) (sarama.ClusterAdmin, error) {
 	// Create Sarama configuration
 	config := sarama.NewConfig()
@@ -429,16 +650,72 @@ func addCondition(operation *operationsv1alpha1.KafkaOperation, condType, reason
 func (r *KafkaOperationReconciler) updateStatus(ctx context.Context,
 	operation *operationsv1alpha1.KafkaOperation, logger logr.Logger) (ctrl.Result, error) {
 
-	logger.Info("Updating KafkaOperation status", "state", operation.Status.State)
-	if err := r.Status().Update(ctx, operation); err != nil {
-		logger.Error(err, "Failed to update KafkaOperation status")
-		return ctrl.Result{RequeueAfter: time.Second * 5}, err
+	// Check if context is cancelled
+	select {
+	case <-ctx.Done():
+		return ctrl.Result{}, ctx.Err()
+	default:
+		// Context not cancelled, proceed
 	}
-	return ctrl.Result{}, nil
+
+	logger.Info("Updating KafkaOperation status", "state", operation.Status.State)
+
+	// Retry logic for handling resource version conflicts
+	maxRetries := 3
+	retryCount := 0
+
+	for retryCount < maxRetries {
+		err := r.Status().Update(ctx, operation)
+		if err == nil {
+			// If we had to retry due to conflicts, return with requeue
+			if retryCount > 0 {
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+			return ctrl.Result{}, nil
+		}
+
+		if errors.IsConflict(err) {
+			// Resource version conflict, retry
+			retryCount++
+			logger.Info("Resource version conflict, retrying", "attempt", retryCount)
+
+			// Refetch the resource to get the latest version
+			var refetchedOperation operationsv1alpha1.KafkaOperation
+			if err := r.Get(ctx, client.ObjectKey{Namespace: operation.Namespace, Name: operation.Name}, &refetchedOperation); err != nil {
+				logger.Error(err, "Failed to refetch KafkaOperation")
+				return ctrl.Result{RequeueAfter: time.Second * 5}, err
+			}
+
+			// Update the resource version and preserve our status changes
+			refetchedOperation.Status = operation.Status
+			operation = &refetchedOperation
+
+			// Check context again before retrying
+			select {
+			case <-ctx.Done():
+				return ctrl.Result{}, ctx.Err()
+			default:
+				// Context not cancelled, continue with retry
+			}
+		} else {
+			// Not a conflict error, return
+			logger.Error(err, "Failed to update KafkaOperation status")
+			return ctrl.Result{RequeueAfter: time.Second * 5}, err
+		}
+	}
+
+	// Max retries exceeded
+	logger.Error(fmt.Errorf("max retries exceeded"), "Failed to update KafkaOperation status after multiple attempts")
+	return ctrl.Result{RequeueAfter: time.Second * 10}, fmt.Errorf("failed to update status after %d attempts", maxRetries)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *KafkaOperationReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Initialize the getKafkaAdminClient field with the default implementation
+	if r.getKafkaAdminClient == nil {
+		r.getKafkaAdminClient = r.defaultGetKafkaAdminClient
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&operationsv1alpha1.KafkaOperation{}).
 		Named("kafkaoperation").
