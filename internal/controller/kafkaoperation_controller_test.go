@@ -392,7 +392,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(statusUpdated).To(gomega.BeTrue())
 			// Should requeue for the restoration phase
-			gomega.Expect(result.Requeue || result.RequeueAfter > 0).To(gomega.BeTrue())
+			gomega.Expect(result.RequeueAfter).To(gomega.BeNumerically(">", 0))
 		})
 	})
 
@@ -450,7 +450,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(statusUpdated).To(gomega.BeTrue())
 			// Should not requeue after failure
-			gomega.Expect(result.Requeue).To(gomega.BeFalse())
+			gomega.Expect(result.RequeueAfter).To(gomega.Equal(time.Duration(0)))
 		})
 	})
 
@@ -459,7 +459,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 		ginkgo.It("should restore to specified values and mark operation as complete", func() {
 			// Setup the mock client Get function
 			now := metav1.Now()
-			tenSecondsAgo := metav1.NewTime(now.Time.Add(-10 * time.Second))
+			tenSecondsAgo := metav1.NewTime(now.Add(-10 * time.Second))
 
 			operation := &operationsv1alpha1.KafkaOperation{
 				ObjectMeta: metav1.ObjectMeta{
@@ -535,7 +535,6 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			gomega.Expect(configUpdated).To(gomega.BeTrue())
 			gomega.Expect(statusUpdated).To(gomega.BeTrue())
 			// Should not requeue after completion
-			gomega.Expect(result.Requeue).To(gomega.BeFalse())
 			gomega.Expect(result.RequeueAfter).To(gomega.Equal(time.Duration(0)))
 		})
 	})
@@ -545,7 +544,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 		ginkgo.It("should mark the operation as failed", func() {
 			// Setup the mock client Get function
 			now := metav1.Now()
-			tenSecondsAgo := metav1.NewTime(now.Time.Add(-10 * time.Second))
+			tenSecondsAgo := metav1.NewTime(now.Add(-10 * time.Second))
 
 			operation := &operationsv1alpha1.KafkaOperation{
 				ObjectMeta: metav1.ObjectMeta{
@@ -603,7 +602,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(statusUpdated).To(gomega.BeTrue())
 			// Should not requeue after failure
-			gomega.Expect(result.Requeue).To(gomega.BeFalse())
+			gomega.Expect(result.RequeueAfter).To(gomega.Equal(time.Duration(0)))
 		})
 	})
 
@@ -674,7 +673,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			// Verify expectations
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(statusUpdated).To(gomega.BeTrue())
-			gomega.Expect(result.Requeue).To(gomega.BeFalse())
+			gomega.Expect(result.RequeueAfter).To(gomega.Equal(time.Duration(0)))
 		})
 
 		ginkgo.It("should handle AlterConfig errors during retention reduction", func() {
@@ -744,7 +743,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			// Verify expectations
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(statusUpdated).To(gomega.BeTrue())
-			gomega.Expect(result.Requeue).To(gomega.BeFalse())
+			gomega.Expect(result.RequeueAfter).To(gomega.Equal(time.Duration(0)))
 		})
 	})
 
@@ -816,7 +815,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			// Verify expectations
 			gomega.Expect(err).To(gomega.HaveOccurred())
 			gomega.Expect(err.Error()).To(gomega.ContainSubstring("resource not found"))
-			gomega.Expect(result.Requeue).To(gomega.BeFalse())
+			gomega.Expect(result.RequeueAfter).To(gomega.Equal(time.Duration(0)))
 		})
 	})
 
@@ -826,7 +825,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			// Setup the mock client Get function
 			now := metav1.Now()
 			timeoutDuration := 60
-			retentionReducedTime := metav1.NewTime(now.Time.Add(-10 * time.Second))
+			retentionReducedTime := metav1.NewTime(now.Add(-10 * time.Second))
 
 			operation := &operationsv1alpha1.KafkaOperation{
 				ObjectMeta: metav1.ObjectMeta{
@@ -870,7 +869,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			// Setup the mock client Get function
 			now := metav1.Now()
 			timeoutDuration := 5
-			retentionReducedTime := metav1.NewTime(now.Time.Add(-10 * time.Second)) // More than timeout
+			retentionReducedTime := metav1.NewTime(now.Add(-10 * time.Second)) // More than timeout
 
 			operation := &operationsv1alpha1.KafkaOperation{
 				ObjectMeta: metav1.ObjectMeta{
@@ -930,7 +929,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(configUpdated).To(gomega.BeTrue())
 			gomega.Expect(statusUpdated).To(gomega.BeTrue())
-			gomega.Expect(result.Requeue).To(gomega.BeFalse())
+			gomega.Expect(result.RequeueAfter).To(gomega.Equal(time.Duration(0)))
 		})
 	})
 
@@ -996,7 +995,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			// Verify expectations
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(stateTransitioned).To(gomega.BeTrue())
-			gomega.Expect(result.Requeue || result.RequeueAfter > 0).To(gomega.BeTrue())
+			gomega.Expect(result.RequeueAfter).To(gomega.BeNumerically(">", 0))
 		})
 
 		ginkgo.It("should transition from InProgress to WaitingForRestore after reducing retention", func() {
@@ -1193,7 +1192,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 
 			// Verify expectations
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(result.Requeue).To(gomega.BeFalse())
+			gomega.Expect(result.RequeueAfter).To(gomega.Equal(time.Duration(0)))
 		})
 
 		ginkgo.It("should not requeue for completed operations", func() {
@@ -1227,7 +1226,6 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 
 			// Verify expectations
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(result.Requeue).To(gomega.BeFalse())
 			gomega.Expect(result.RequeueAfter).To(gomega.Equal(time.Duration(0)))
 		})
 	})
@@ -1312,7 +1310,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			gomega.Expect(updateAttempts).To(gomega.Equal(3)) // Should retry after conflict
 			gomega.Expect(statusUpdated).To(gomega.BeTrue())
 			gomega.Expect(operation.ResourceVersion).To(gomega.Equal("2"))
-			gomega.Expect(result.Requeue || result.RequeueAfter > 0).To(gomega.BeTrue())
+			gomega.Expect(result.RequeueAfter).To(gomega.BeNumerically(">", 0))
 		})
 
 		ginkgo.It("should handle concurrent status updates", func() {
@@ -1381,7 +1379,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			// Verify expectations
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(updateAttempts).To(gomega.Equal(2)) // Should retry after conflict
-			gomega.Expect(result.Requeue || result.RequeueAfter > 0).To(gomega.BeTrue())
+			gomega.Expect(result.RequeueAfter).To(gomega.BeNumerically(">", 0))
 		})
 
 		ginkgo.It("should handle concurrent operations on the same topic", func() {
@@ -1432,9 +1430,10 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 					return errors.New("invalid object type")
 				}
 
-				if key.Name == "test-operation-1" {
+				switch key.Name {
+				case "test-operation-1":
 					*op = *operation1
-				} else if key.Name == "test-operation-2" {
+				case "test-operation-2":
 					*op = *operation2
 				}
 				return nil
@@ -1474,9 +1473,10 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 					statusUpdates[op.Name] = true
 
 					// Update the operation status in our test objects
-					if op.Name == "test-operation-1" {
+					switch op.Name {
+					case "test-operation-1":
 						operation1.Status = op.Status
-					} else if op.Name == "test-operation-2" {
+					case "test-operation-2":
 						operation2.Status = op.Status
 					}
 
@@ -1677,7 +1677,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			// For this test, we're just checking that the status was updated
 			// The getCallCount check is removed as it's not reliable in the current implementation
 			gomega.Expect(statusUpdates).To(gomega.BeNumerically(">", 0)) // Should have updated status
-			gomega.Expect(result.Requeue || result.RequeueAfter > 0).To(gomega.BeTrue())
+			gomega.Expect(result.RequeueAfter).To(gomega.BeNumerically(">", 0))
 		})
 
 		// Test for Parallel Reconciliation
@@ -1763,7 +1763,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			// Verify expectations
 			for i := 0; i < reconcileCount; i++ {
 				gomega.Expect(errors[i]).NotTo(gomega.HaveOccurred())
-				gomega.Expect(results[i].Requeue || results[i].RequeueAfter > 0).To(gomega.BeTrue())
+				gomega.Expect(results[i].RequeueAfter).To(gomega.BeNumerically(">", 0))
 			}
 
 			// Verify that shared resources were accessed in a thread-safe manner
@@ -1839,7 +1839,7 @@ var _ = ginkgo.Describe("KafkaOperationReconciler", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(updateAttempts).To(gomega.Equal(3))             // Should retry after conflict
 			gomega.Expect(statusUpdates).To(gomega.BeNumerically(">", 0)) // Should have updated status
-			gomega.Expect(result.Requeue || result.RequeueAfter > 0).To(gomega.BeTrue())
+			gomega.Expect(result.RequeueAfter).To(gomega.BeNumerically(">", 0))
 		})
 	})
 })

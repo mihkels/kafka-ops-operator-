@@ -374,9 +374,9 @@ func (r *KafkaOperationReconciler) startOperation(ctx context.Context,
 	// Continue with processing the operation
 	result, err = r.processOperation(ctx, operation, logger)
 
-	// Ensure we requeue or have a requeue after set
-	if !result.Requeue && result.RequeueAfter == 0 {
-		result.Requeue = true
+	// Ensure we have a requeue after set
+	if result.RequeueAfter == 0 {
+		result.RequeueAfter = time.Second
 	}
 
 	return result, err
