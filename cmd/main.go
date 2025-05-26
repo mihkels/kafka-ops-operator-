@@ -19,7 +19,6 @@ package main
 import (
 	"crypto/tls"
 	"flag"
-	"github.io/mihkels/kafka-ops-operator/internal/config"
 	"os"
 	"path/filepath"
 
@@ -39,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	operationsv1alpha1 "github.io/mihkels/kafka-ops-operator/api/v1alpha1"
+	"github.io/mihkels/kafka-ops-operator/internal/config"
 	"github.io/mihkels/kafka-ops-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )

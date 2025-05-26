@@ -22,7 +22,6 @@ import (
 	"crypto/x509"
 	stderrors "errors"
 	"fmt"
-	"github.io/mihkels/kafka-ops-operator/internal/config"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -38,6 +37,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	operationsv1alpha1 "github.io/mihkels/kafka-ops-operator/api/v1alpha1"
+	"github.io/mihkels/kafka-ops-operator/internal/config"
 )
 
 const (
